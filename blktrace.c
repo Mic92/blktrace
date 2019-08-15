@@ -2106,6 +2106,7 @@ static int handle_args(int argc, char *argv[])
 	struct statfs st;
 	int act_mask_tmp = 0;
 
+	optind = 0;
 	while ((c = getopt_long(argc, argv, S_OPTS, l_opts, NULL)) >= 0) {
 		switch (c) {
 		case 'a':
@@ -2236,10 +2237,10 @@ static int handle_args(int argc, char *argv[])
 		return 1;
 	}
 
-	if (st.f_type != (long)DEBUGFS_TYPE) {
-		fprintf(stderr, "Debugfs is not mounted at %s\n", debugfs_path);
-		return 1;
-	}
+	//if (st.f_type != (long)DEBUGFS_TYPE) {
+	//	fprintf(stderr, "Debugfs is not mounted at %s\n", debugfs_path);
+	//	return 1;
+	//}
 
 	if (act_mask_tmp != 0)
 		act_mask = act_mask_tmp;
@@ -2680,7 +2681,7 @@ out:
 
 static int run_tracers(void)
 {
-	atexit(exit_tracing);
+	//atexit(exit_tracing);
 	if (net_mode == Net_client)
 		printf("blktrace: connecting to %s\n", hostname);
 
@@ -2786,7 +2787,61 @@ static cpu_set_t *get_online_cpus(void)
 	return set;
 }
 
-int main(int argc, char *argv[])
+struct prog_args {
+	int argc;
+	char** argv;
+};
+
+static void* _blktrace_start(void *_args) {
+	struct prog_args *args = (struct prog_args*) _args;
+	int argc = args->argc;
+	char **argv = args->argv;
+
+	int ret = 0;
+
+	setlocale(LC_NUMERIC, "en_US");
+	pagesize = getpagesize();
+	online_cpus = get_online_cpus();
+	if (!online_cpus) {
+		fprintf(stderr, "cannot get online cpus %d/%s\n",
+			errno, strerror(errno));
+		ret = 1;
+		goto out;
+	} else if (handle_args(argc, argv)) {
+		ret = 1;
+		goto out;
+	}
+
+	ncpus = CPU_COUNT_S(CPU_ALLOC_SIZE(max_cpus), online_cpus);
+	if (ndevs > 1 && output_name && strcmp(output_name, "-") != 0) {
+		fprintf(stderr, "-o not supported with multiple devices\n");
+		ret = 1;
+		goto out;
+	}
+	ret = run_tracers();
+
+ out:
+	if (pfp)
+		fclose(pfp);
+	rel_devpaths();
+	return NULL;
+}
+
+static pthread_t main_thread;
+static struct prog_args args = { };
+
+int blktrace_start(int argc, char *argv[]) {
+  args.argc = argc;
+  args.argv = argv;
+	return pthread_create(&main_thread, NULL, _blktrace_start, &args);
+}
+
+void blktrace_stop(void) {
+	handle_sigint(SIGINT);
+	pthread_join(main_thread, NULL);
+}
+
+int blktrace_main(int argc, char *argv[])
 {
 	int ret = 0;
 
